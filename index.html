@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Toolz-AZ | Web Utilities</title>
+
+    <link rel="stylesheet" href="src/css/style.css?v=2026-10-02-5">
+
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+
+    <meta name="description" content="Toolz-AZ is a privacy-first collection of browser-based image utilities: compressor, resizer, background removal, color palette extraction, QR codes, and format conversion. All processing happens locally.">
+
+    <meta name="color-scheme" content="light dark">
+
+    <!--
+        Content Security Policy.
+
+        The app is a privacy-first tool: images never leave the browser. This
+        policy is what actually enforces that claim, by pinning every script
+        and style source to a known origin instead of trusting whatever a
+        third-party bundle happens to inject at runtime.
+
+        - No 'unsafe-inline' for scripts: the one inline <head> script is
+          allowed by hash, so it cannot be used as a vector if markup is ever
+          injected.
+        - 'unsafe-inline' remains for styles only, because swatch colours and
+          similar values are written as inline style attributes.
+        - blob: is required because image previews and downloads are served
+          from object URLs.
+        - 'wasm-unsafe-eval' is required by the AVIF encoder and the
+          background-removal model, which are WebAssembly. This permits WASM
+          compilation only; it does not re-enable eval() for JavaScript.
+        - blob: is ALSO required in script-src. The background-removal
+          library downloads the ONNX runtime, wraps it in a Blob and hands
+          ORT a blob: URL to import(). Without blob: in script-src that import
+          is refused and every removal fails with "Failed to create session".
+        - 'unsafe-eval' is required by ONNX Runtime itself: it builds typed
+          arrays for inference with the Function constructor. This is the one
+          real weakening in this policy, and it is scoped to scripts that are
+          already pinned to two known CDN origins. Dropping it makes the
+          background-removal tool impossible to run at all.
+    -->
+
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'self';
+        script-src 'self' 'sha256-MeT/gFQOFHXNb7CSPEO+mFsI3QaaCFhi9UHDIQBh8mI=' 'wasm-unsafe-eval' 'unsafe-eval' blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net;
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob:;
+        font-src 'self';
+        connect-src 'self' blob: https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://staticimgly.com;
+        worker-src 'self' blob:;
+        object-src 'none';
+        base-uri 'self';
+        form-action 'none';
+        frame-ancestors 'none';
+    ">
+
+    <!-- Apply the saved theme before first paint to avoid a flash of the wrong theme -->
+
+    <script>
+
+    (function () {
+        try {
+            var saved = localStorage.getItem('theme');
+            var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            document.documentElement.setAttribute('data-theme', saved || (dark ? 'dark' : 'light'));
+        } catch (e) {
+            document.documentElement.setAttribute('data-theme', 'light');
+        }
+    })();
+
+    </script>
+
+</head>
+
+<body>
+
+    <noscript>
+
+        <div class="noscript-message" role="alert">
+
+            <strong data-i18n="noscript.strong">JavaScript is required.</strong>
+
+            <span data-i18n="noscript.text">Toolz-AZ processes images entirely in your browser, which needs JavaScript enabled.</span>
+
+        </div>
+
+    </noscript>
+
+<div class="app-container">
+
+        <nav class="navbar">
+
+            <div class="nav-brand">
+
+                <span class="brand-icon">⚡</span>
+
+                <span class="brand-text">Toolz-AZ</span>
+
+                <span class="brand-licence" data-i18n="nav.licence">Developed under an MIT license.</span>
+
+            </div>
+
+            <div class="nav-links">
+
+                <a href="#" class="nav-link active" data-target="home" data-i18n="nav.home">Home</a>
+
+                <a href="#" class="nav-link" data-target="about" data-i18n="nav.about">About</a>
+
+                <button id="themeToggle" class="theme-toggle" data-i18n-attr="aria-label:nav.toggle_theme" aria-label="Toggle theme" aria-pressed="false">🌙</button>
+
+                <button id="langToggle" class="lang-toggle" data-lang-switch data-i18n-attr="aria-label:nav.toggle_lang" aria-label="Change language" title="Türkçe"><span class="lang-globe" aria-hidden="true">🌐</span><span class="lang-code">TR</span></button>
+
+            </div>
+
+        </nav>
+
+        <main class="main-content">
+
+            <section id="home" class="section active">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="dash.title">Dashboard</h1>
+
+                    <p data-i18n="dash.subtitle">Choose a tool to get started</p>
+
+                </div>
+
+                <div class="tools-grid" id="toolsGrid">
+
+                    <!-- Tool cards will be injected here -->
+
+                </div>
+
+            </section>
+
+            <section id="palette" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="palette.title">Color Palette Extractor</h1>
+
+                    <p data-i18n="palette.subtitle">Extract dominant colors from images</p>
+
+                </div>
+
+                <div class="palette-content">
+
+                    <div class="upload-area" id="paletteUploadArea">
+
+                        <input type="file" id="paletteFileInput" aria-label="Choose an image for palette extraction" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp" hidden>
+
+                        <div class="upload-content">
+
+                            <div class="upload-icon">✂️</div>
+
+                            <div class="upload-text" data-i18n="upload.drag">Drag & drop an image here</div>
+
+                            <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                            <button class="btn btn-primary" id="paletteBrowseBtn" data-i18n="upload.choose_image">Choose Image</button>
+
+                            <div class="upload-formats" data-i18n="upload.formats_std">JPEG, PNG, WebP, GIF, BMP</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="palette-preview-container">
+
+                        <div class="palette-controls">
+
+                            <div class="mode-selector">
+
+                                <button class="mode-btn active" data-mode="dominant" data-i18n="palette.mode_dominant">Dominant Colors</button>
+
+                                <button class="mode-btn" data-mode="all" data-i18n="palette.mode_all">All Colors</button>
+
+                            </div>
+
+                            <select class="color-count-select" id="colorCountSelect" aria-label="Number of dominant colors">
+
+                                <option value="5" data-i18n="palette.count_five">5 colors</option>
+
+                                <option value="8" data-i18n="palette.count_eight">8 colors</option>
+
+                                <option value="10" data-i18n="palette.count_ten">10 colors</option>
+
+                                <option value="12" data-i18n="palette.count_twelve">12 colors</option>
+
+                                <option value="16" data-i18n="palette.count_sixteen">16 colors</option>
+
+                            </select>
+
+                            <div class="all-colors-controls hidden" id="allColorsControls">
+
+                                <input type="text" class="search-input" id="searchInput" placeholder="Search HEX..." data-i18n-attr="placeholder:search_hex" aria-label="Search colors by HEX">
+
+                                <select class="sort-select" id="sortSelect" aria-label="Sort colors">
+
+                                    <option value="count-desc" data-i18n="palette.sort_common">Most common</option>
+
+                                    <option value="count-asc" data-i18n="palette.sort_rare">Least common</option>
+
+                                    <option value="hex-asc" data-i18n="palette.sort_hex">HEX A-Z</option>
+
+                                </select>
+
+                            </div>
+
+                        </div>
+
+                        <div class="image-preview hidden" id="paletteImagePreview">
+
+                            <div class="preview-header">
+
+                                <div class="preview-info">
+
+                                    <div class="preview-filename" id="palettePreviewFilename">image.png</div>
+
+                                    <div class="preview-meta">
+
+                                        <span class="preview-size" id="palettePreviewSize">1.2 MB</span>
+
+                                        <span class="preview-dims" id="palettePreviewDims">1920 × 1080</span>
+
+                                    </div>
+
+                                </div>
+
+                                <button class="btn btn-secondary" id="paletteRemoveBtn" data-i18n="btn.remove">Remove</button>
+
+                            </div>
+
+                            <div class="preview-container">
+
+                                <img class="preview-image" id="palettePreviewImage" alt="Preview">
+
+                            </div>
+
+                        </div>
+
+                        <div class="palette-results hidden" id="paletteResults">
+
+                            <div class="palette-header">
+
+                                <h3 data-i18n="palette.extracted">Extracted Palette</h3>
+
+                                <button class="btn btn-secondary" id="copyPaletteBtn" data-i18n="palette.copy_palette">Copy Palette</button>
+
+                            </div>
+
+                            <div class="palette-info-text" id="paletteInfoText">
+
+                                <!-- Info text about colors -->
+
+                            </div>
+
+                            <div class="palette-grid" id="paletteGrid">
+
+                                <!-- Color swatches will be inserted here -->
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="qr-generator" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="qr.title">QR Code Generator</h1>
+
+                    <p data-i18n="qr.subtitle">Generate QR codes from text or URLs</p>
+
+                </div>
+
+                <div class="qr-content">
+
+                    <div class="qr-input-group">
+
+                        <label for="qrInput" data-i18n="qr.input_label">Enter text or URL</label>
+
+                        <textarea id="qrInput" placeholder="https://example.com or any text..." data-i18n-attr="placeholder:qr.input_placeholder" rows="3"></textarea>
+
+                        <div class="qr-error hidden" id="qrError" data-i18n="qr.error_empty">Please enter some text or a URL</div>
+
+                    </div>
+
+                    <div class="qr-input-group">
+
+                        <label for="qrSize" data-i18n="qr.size">QR Size</label>
+
+                        <select id="qrSize">
+
+                            <option value="128">128 × 128</option>
+
+                            <option value="256" selected>256 × 256</option>
+
+                            <option value="512">512 × 512</option>
+
+                            <option value="1024">1024 × 1024</option>
+
+                        </select>
+
+                    </div>
+
+                    <div class="qr-input-group">
+
+                        <label for="qrMargin" data-i18n="qr.margin">QR Margin</label>
+
+                        <select id="qrMargin">
+
+                            <option value="2" data-i18n="qr.margin_small">Small</option>
+
+                            <option value="4" selected data-i18n="qr.margin_medium">Medium</option>
+
+                            <option value="8" data-i18n="qr.margin_large">Large</option>
+
+                        </select>
+
+                    </div>
+
+                    <div class="qr-colors">
+
+                        <div class="qr-color-group">
+
+                            <label for="qrColor" data-i18n="qr.color">QR Color</label>
+
+                            <div class="color-picker-wrapper">
+
+                                <input type="color" id="qrColor" value="#000000">
+
+                                <input type="text" class="color-value-input" id="qrColorInput" value="#000000" data-i18n-attr="aria-label:qr.color_hex" aria-label="QR code color (HEX)" spellcheck="false">
+
+                            </div>
+
+                        </div>
+
+                        <div class="qr-color-group">
+
+                            <label for="qrBgColor" data-i18n="qr.bg_color">Background Color</label>
+
+                            <div class="color-picker-wrapper">
+
+                                <input type="color" id="qrBgColor" value="#ffffff">
+
+                                <input type="text" class="color-value-input" id="qrBgColorInput" value="#ffffff" data-i18n-attr="aria-label:qr.bg_hex" aria-label="QR background color (HEX)" spellcheck="false">
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="qr-warning hidden" id="qrWarning" data-i18n="qr.warning_contrast">
+
+                        These colors may make the QR code difficult to scan.
+
+                    </div>
+
+                    <div class="qr-buttons">
+
+                        <button class="btn btn-primary" id="qrGenerateBtn" data-i18n="qr.generate">Generate QR Code</button>
+
+                        <button class="btn btn-secondary" id="qrClearBtn" data-i18n="btn.clear">Clear</button>
+
+                    </div>
+
+                    <div class="qr-preview hidden" id="qrPreview">
+
+                        <div class="qr-container-wrapper" id="qrContainerWrapper">
+
+                            <div class="qr-canvas-container" id="qrContainer"></div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="qr-format-download hidden" id="qrDownloadSection">
+
+                        <label for="qrFormat" data-i18n="qr.download_format">Download Format</label>
+
+                        <select id="qrFormat">
+
+                            <option value="png" selected>PNG</option>
+
+                            <option value="jpg">JPG</option>
+
+                            <option value="svg">SVG</option>
+
+                        </select>
+
+                        <button class="btn btn-primary" id="qrDownloadBtn" data-i18n="btn.download">Download</button>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="about" class="section">
+
+                <div class="about-hero">
+
+                    <p class="about-eyebrow" data-i18n="about.eyebrow">Toolz-AZ</p>
+
+                    <h1 data-i18n="about.headline">Everyday image tools, running entirely in your browser</h1>
+
+                    <p class="about-lede"><span id="aboutToolCount">All</span><span data-i18n="about.lede_prefix"> utilities for compressing, resizing, converting and inspecting images. Nothing is uploaded, nothing is stored, and nothing is tracked.</span></p>
+
+                </div>
+
+                <div class="about-section">
+
+                    <h2 class="about-section-title" data-i18n="about.tools_title">The tools</h2>
+
+                    <p class="about-section-sub" data-i18n="about.tools_sub">Open one from the dashboard. Each is a single-purpose page.</p>
+
+                    <div class="about-tool-grid" id="aboutToolGrid">
+
+                        <!-- Tool summaries are rendered from the shared tool list -->
+
+                    </div>
+
+                </div>
+
+                <div class="about-section">
+
+                    <h2 class="about-section-title" data-i18n="about.why_title">Why it works this way</h2>
+
+                    <div class="about-principles">
+
+                        <div class="about-principle">
+
+                            <div class="about-principle-icon" aria-hidden="true">🔒</div>
+
+                            <h3 data-i18n="about.p_files">Your files stay yours</h3>
+
+                            <p data-i18n="about.p_files_d">Images are read locally and drawn onto a canvas. There is no server to send them to.</p>
+
+                        </div>
+
+                        <div class="about-principle">
+
+                            <div class="about-principle-icon" aria-hidden="true">⚡</div>
+
+                            <h3 data-i18n="about.p_install">Nothing to install</h3>
+
+                            <p data-i18n="about.p_install_d">No account, no backend, no build step. Open the page and start working.</p>
+
+                        </div>
+
+                        <div class="about-principle">
+
+                            <div class="about-principle-icon" aria-hidden="true">🎨</div>
+
+                            <h3 data-i18n="about.p_theme">Light and dark</h3>
+
+                            <p data-i18n="about.p_theme_d">Follows your system setting and remembers your choice.</p>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="compressor" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="compressor.title">Image Compressor</h1>
+
+                    <p data-i18n="compressor.subtitle">Compress and resize images client-side</p>
+
+                </div>
+
+                <div class="compressor-content">
+
+                    <div class="upload-area" id="uploadArea">
+
+                        <input type="file" id="fileInput" aria-label="Choose an image to compress" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp" hidden>
+
+                        <div class="upload-content">
+
+                            <div class="upload-icon">✂️</div>
+
+                            <div class="upload-text" data-i18n="upload.drag">Drag & drop an image here</div>
+
+                            <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                            <button class="btn btn-primary" id="browseBtn" data-i18n="upload.choose_image">Choose Image</button>
+
+                            <div class="upload-formats" data-i18n="upload.formats_std">JPEG, PNG, WebP, GIF, BMP</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="image-preview hidden" id="imagePreview">
+
+                        <div class="preview-header">
+
+                            <div class="preview-info">
+
+                                <div class="preview-filename" id="previewFilename">image.png</div>
+
+                                <div class="preview-meta">
+
+                                    <span class="preview-size" id="previewSize">1.2 MB</span>
+
+                                    <span class="preview-dims" id="previewDims">1920 × 1080</span>
+
+                                </div>
+
+                            </div>
+
+                            <button class="btn btn-secondary" id="removeBtn" data-i18n="btn.remove">Remove</button>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="previewImage" alt="Preview">
+
+                        </div>
+
+                    </div>
+
+                    
+
+                    <div class="controls-section hidden" id="controlsSection">
+
+                        <!-- Resize Controls -->
+
+                        <div class="control-group">
+
+                            <h3 data-i18n="compressor.resize">Resize</h3>
+
+                            <div class="resize-inputs">
+
+                                <div class="resize-input">
+
+                                    <label for="widthInput" data-i18n="compressor.width">Width</label>
+
+                                    <input type="number" id="widthInput" value="1920" min="1" max="8192">
+
+                                    <span>px</span>
+
+                                </div>
+
+                                <div class="resize-input">
+
+                                    <label for="heightInput" data-i18n="compressor.height">Height</label>
+
+                                    <input type="number" id="heightInput" value="1080" min="1" max="8192">
+
+                                    <span>px</span>
+
+                                </div>
+
+                            </div>
+
+                            <div class="resize-options">
+
+                                <label class="checkbox-label">
+
+                                    <input type="checkbox" id="aspectRatioLock" checked>
+
+                                    <span data-i18n="compressor.lock_aspect">Lock aspect ratio</span>
+
+                                </label>
+
+                                <button class="btn btn-secondary btn-sm" id="resetSizeBtn" data-i18n="compressor.reset">Reset to original</button>
+
+                            </div>
+
+                        </div>
+
+                        
+
+                        <!-- Compression Controls -->
+
+                        <div class="control-group">
+
+                            <h3 data-i18n="compressor.output">Output</h3>
+
+                            <div class="format-row">
+
+                                <label for="formatSelect" data-i18n="compressor.format">Format</label>
+
+                                <select id="formatSelect">
+
+                                    <option value="image/jpeg">JPEG</option>
+
+                                    <option value="image/png">PNG</option>
+
+                                    <option value="image/webp">WebP</option>
+
+                                </select>
+
+                            </div>
+
+                            <div class="quality-row">
+
+                                <label for="qualitySlider"><span data-i18n="compressor.quality">Quality:</span><span id="qualityValue">80</span>%</label>
+
+                                <input type="range" id="qualitySlider" min="1" max="100" value="80">
+
+                            </div>
+
+                            <p class="format-note" id="formatNote" data-i18n="compressor.quality_note">Quality slider applies to JPEG and WebP. PNG uses lossless compression.</p>
+
+                        </div>
+
+                    </div>
+
+                    
+
+                    <div class="output-preview hidden" id="outputPreview">
+
+                        <h3 data-i18n="compressor.output_preview">Output Preview</h3>
+
+                        <div class="output-info">
+
+                            <span class="output-dims" id="outputDims">1920 × 1080</span>
+
+                            <span class="output-size" id="outputSize">Estimated: 500 KB</span>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <canvas id="outputCanvas"></canvas>
+
+                        </div>
+
+                    </div>
+
+                    
+
+                    <div class="output-controls hidden" id="outputControls">
+
+                        <button class="btn btn-primary" id="generateBtn" data-i18n="compressor.generate_output">Generate Output</button>
+
+                    </div>
+
+                    
+
+                    <div class="result-section hidden" id="resultSection">
+
+                        <div class="result-header">
+
+                            <h3 data-i18n="btn.result">Result</h3>
+
+                            <button class="btn btn-primary" id="downloadBtn" data-i18n="btn.download">Download</button>
+
+                        </div>
+
+                        <div class="result-stats">
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.original_size">Original size</div>
+
+                                <div class="stat-value" id="originalSize">1.2 MB</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.output_size">Output size</div>
+
+                                <div class="stat-value" id="outputSizeFinal">500 KB</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.size_change">Size Change</div>
+
+                                <div class="stat-value" id="sizeReduction">Reduced by 42.5 KB (35.2%)</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.dimensions">Dimensions</div>
+
+                                <div class="stat-value" id="finalDims">1920 × 1080</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label">Format</div>
+
+                                <div class="stat-value" id="finalFormat">JPEG</div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="remove-bg" class="section">
+
+                <div class="header-section">
+
+                    <h1><span data-i18n="bgrem.title">Background Removal</span> <span class="section-beta" data-i18n="status.beta">Beta</span></h1>
+
+                    <p data-i18n="bgrem.subtitle">Remove image backgrounds automatically</p>
+
+                </div>
+
+                <div class="compressor-content">
+
+                    <div class="upload-area" id="bgUploadArea">
+
+                        <input type="file" id="bgFileInput" aria-label="Choose an image for background removal" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp" hidden>
+
+                        <div class="upload-content">
+
+                            <div class="upload-icon">✂️</div>
+
+                            <div class="upload-text" data-i18n="upload.drag">Drag & drop an image here</div>
+
+                            <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                            <button class="btn btn-primary" id="bgBrowseBtn" data-i18n="upload.choose_image">Choose Image</button>
+
+                            <div class="upload-formats" data-i18n="upload.formats_std">JPEG, PNG, WebP, GIF, BMP</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="image-preview hidden" id="bgImagePreview">
+
+                        <div class="preview-header">
+
+                            <div class="preview-info">
+
+                                <div class="preview-filename" id="bgPreviewFilename">image.png</div>
+
+                                <div class="preview-meta">
+
+                                    <span class="preview-size" id="bgPreviewSize">1.2 MB</span>
+
+                                    <span class="preview-dims" id="bgPreviewDims">1920 × 1080</span>
+
+                                </div>
+
+                            </div>
+
+                            <button class="btn btn-primary" id="bgProcessBtn" data-i18n="bgrem.clean_btn">Remove Background</button>
+                            <button class="btn btn-secondary" id="bgRemoveBtn" data-i18n="btn.remove">Remove</button>
+
+                        </div>
+
+                        <div class="bg-options">
+
+                            <label for="bgModelSelect" data-i18n="bgrem.model">Model</label>
+
+                            <select id="bgModelSelect">
+
+                                <option value="fast" selected data-i18n="bgrem.model_fast">Fast — 44 MB, recommended</option>
+
+                                <option value="balanced" data-i18n="bgrem.model_balanced">Balanced — 88 MB</option>
+
+                                <option value="quality" data-i18n="bgrem.model_quality">Best quality — 176 MB</option>
+
+                            </select>
+
+                            <span class="bg-options-note" data-i18n="bgrem.model_note">The first run downloads the model; later runs reuse the browser cache.</span>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="bgPreviewImage" alt="Preview">
+
+                        </div>
+
+                    </div>
+
+                    <div class="processing-message hidden" id="bgProcessingMessage">
+
+                        <div class="processing-content">
+
+                            <div class="processing-spinner"></div>
+
+                            <p data-i18n="bgrem.working">Removing background... This may take 10-30 seconds on first run.</p>
+                            <div class="progress-track hidden" id="bgProgressTrack">
+                                <div class="progress-bar" id="bgProgressBar"></div>
+                            </div>
+                            <div class="processing-status" id="bgProcessingStatus" data-i18n="bgrem.loading_model">Loading model...</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="output-preview hidden" id="bgOutputPreview">
+
+                        <div class="output-header">
+
+                            <h3 data-i18n="btn.result">Result</h3>
+
+                            <div class="output-actions">
+                                <button class="btn btn-primary" id="bgDownloadBtn" data-i18n="bgrem.download_png">Download PNG</button>
+                                <span class="output-info">
+                                    <span class="output-size" id="bgOutputSize">- MB</span>
+                                </span>
+                            </div>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="bgOutputImage" alt="Result">
+
+                        </div>
+
+                    </div>
+
+                    </div>
+
+            </section>
+
+            <section id="resize-image" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="resizer.title">Image Resizer</h1>
+
+                    <p data-i18n="resizer.subtitle">Resize images to specific dimensions</p>
+
+                </div>
+
+                <div class="compressor-content">
+
+                    <div class="upload-area" id="resizeUploadArea">
+
+                        <input type="file" id="resizeFileInput" aria-label="Choose an image to resize" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp" hidden>
+
+                        <div class="upload-content">
+
+                            <div class="upload-icon">✂️</div>
+
+                            <div class="upload-text" data-i18n="upload.drag">Drag & drop an image here</div>
+
+                            <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                            <button class="btn btn-primary" id="resizeBrowseBtn" data-i18n="upload.choose_image">Choose Image</button>
+
+                            <div class="upload-formats" data-i18n="upload.formats_std">JPEG, PNG, WebP, GIF, BMP</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="image-preview hidden" id="resizeImagePreview">
+
+                        <div class="preview-header">
+
+                            <div class="preview-info">
+
+                                <div class="preview-filename" id="resizePreviewFilename">image.png</div>
+
+                                <div class="preview-meta">
+
+                                    <span class="preview-size" id="resizePreviewSize">1.2 MB</span>
+
+                                    <span class="preview-dims" id="resizePreviewDims">1920 × 1080</span>
+
+                                </div>
+
+                            </div>
+
+                            <button class="btn btn-secondary" id="resizeRemoveBtn" data-i18n="btn.remove">Remove</button>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="resizePreviewImage" alt="Preview">
+
+                        </div>
+
+                    </div>
+
+                    
+
+                    <div class="controls-section hidden" id="resizeControls">
+
+                        <div class="control-group">
+
+                            <h3 data-i18n="resizer.dimensions">Dimensions</h3>
+
+                            <div class="resize-inputs">
+
+                                <div class="resize-input">
+
+                                    <label for="resizeWidthInput" data-i18n="resizer.width">Width</label>
+
+                                    <input type="number" id="resizeWidthInput" value="1920" min="1">
+
+                                    <span>px</span>
+
+                                </div>
+
+                                <div class="resize-input">
+
+                                    <label for="resizeHeightInput" data-i18n="resizer.height">Height</label>
+
+                                    <input type="number" id="resizeHeightInput" value="1080" min="1">
+
+                                    <span>px</span>
+
+                                </div>
+
+                            </div>
+
+                            <div class="resize-scale">
+
+                                <label for="resizeScaleSlider"><span data-i18n="resizer.scale">Scale:</span><span id="resizeScaleValue">100</span>%</label>
+
+                                <input type="range" id="resizeScaleSlider" min="10" max="200" value="100">
+
+                            </div>
+
+                            <div class="resize-options">
+
+                                <label class="checkbox-label">
+
+                                    <input type="checkbox" id="resizeAspectRatioLock" checked>
+
+                                    <span data-i18n="resizer.lock_aspect">Lock aspect ratio</span>
+
+                                </label>
+
+                                <button class="btn btn-secondary btn-sm" id="resizeResetBtn" data-i18n="resizer.reset">Reset to original</button>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                    
+
+                    <div class="output-preview hidden" id="resizeOutputPreview">
+
+                        <h3 data-i18n="resizer.output_preview">Output Preview</h3>
+
+                        <div class="output-info">
+
+                            <span class="output-dims" id="resizeOutputDims">1920 × 1080</span>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <canvas id="resizeOutputCanvas"></canvas>
+
+                        </div>
+
+                    </div>
+
+                    
+
+                    <div class="output-controls hidden" id="resizeOutputControls">
+
+                        <button class="btn btn-primary" id="resizeGenerateBtn" data-i18n="resizer.generate">Generate</button>
+
+                        <button class="btn btn-secondary" id="resizeDownloadBtn" data-i18n="btn.download">Download</button>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="convert-file" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="conv.title">Image Converter</h1>
+
+                    <p data-i18n="conv.subtitle">Convert images between JPG, PNG, WebP, BMP, GIF and AVIF</p>
+
+                </div>
+
+                <div class="compressor-content">
+
+                    <div class="upload-area" id="convUploadArea">
+
+                        <input type="file" id="convFileInput" aria-label="Choose an image to convert" accept="image/jpeg,image/png,image/webp,image/bmp,image/gif,image/avif" hidden>
+
+                        <div class="upload-content">
+
+                            <div class="upload-icon">🔄</div>
+
+                            <div class="upload-text" data-i18n="upload.drag">Drag & drop an image here</div>
+
+                            <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                            <button class="btn btn-primary" id="convBrowseBtn" data-i18n="upload.choose_image">Choose Image</button>
+
+                            <div class="upload-formats" data-i18n="upload.formats_conv">JPG, PNG, WebP, BMP, GIF, AVIF</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="image-preview hidden" id="convImagePreview">
+
+                        <div class="preview-header">
+
+                            <div class="preview-info">
+
+                                <div class="preview-filename" id="convPreviewFilename">image.png</div>
+
+                                <div class="preview-meta">
+
+                                    <span class="preview-size" id="convPreviewSize">1.2 MB</span>
+
+                                    <span class="preview-dims" id="convPreviewDims">1920 × 1080</span>
+
+                                    <span class="preview-format" id="convPreviewFormat">PNG</span>
+
+                                </div>
+
+                            </div>
+
+                            <button class="btn btn-secondary" id="convRemoveBtn" data-i18n="btn.remove">Remove</button>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="convPreviewImage" alt="Preview">
+
+                        </div>
+
+                    </div>
+
+                    <div class="controls-section hidden" id="convControls">
+
+                        <div class="control-group">
+
+                            <h3 data-i18n="conv.output">Output</h3>
+
+                            <div class="format-row">
+
+                                <label for="convFormatSelect" data-i18n="conv.format">Format</label>
+
+                                <select id="convFormatSelect"></select>
+
+                            </div>
+
+                            <p class="format-note" id="convGifNote" data-i18n="conv.gif_note">Animated GIFs are converted as a single frame (the first frame is used).</p>
+
+                            <div class="quality-row" id="convQualityRow">
+
+                                <label for="convQualitySlider"><span data-i18n="conv.quality">Quality:</span><span id="convQualityValue">80</span>%</label>
+
+                                <input type="range" id="convQualitySlider" min="1" max="100" value="80">
+
+                            </div>
+
+                            <p class="format-note" id="convQualityNote" data-i18n="conv.quality_note">Quality applies to JPG, WebP and AVIF. PNG, GIF and BMP are lossless.</p>
+
+                        </div>
+
+                    </div>
+
+                    <div class="processing-message hidden" id="convProcessingMessage">
+
+                        <div class="processing-content">
+
+                            <div class="processing-spinner"></div>
+
+                            <p data-i18n="conv.converting">Converting image...</p>
+
+                        </div>
+
+                    </div>
+
+                    <div class="error-message hidden" id="convError"></div>
+
+                    <div class="output-preview hidden" id="convOutputPreview">
+
+                        <h3 data-i18n="conv.output_preview">Output Preview</h3>
+
+                        <div class="output-info">
+
+                            <span class="output-dims" id="convOutputDims">1920 × 1080</span>
+
+                            <span class="output-format" id="convOutputFormat">WebP</span>
+
+                            <span class="output-size" id="convOutputSize">- KB</span>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="convOutputImage" alt="Result">
+
+                        </div>
+
+                    </div>
+
+                    <div class="output-controls hidden" id="convOutputControls">
+
+                        <button class="btn btn-primary" id="convConvertBtn" data-i18n="conv.convert">Convert</button>
+
+                    </div>
+
+                    <div class="result-section hidden" id="convResultSection">
+
+                        <div class="result-header">
+
+                            <h3 data-i18n="btn.result">Result</h3>
+
+                            <button class="btn btn-primary" id="convDownloadBtn" data-i18n="btn.download">Download</button>
+
+                        </div>
+
+                        <div class="result-stats">
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.original_size">Original size</div>
+
+                                <div class="stat-value" id="convOriginalSize">1.2 MB</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.output_size">Output size</div>
+
+                                <div class="stat-value" id="convOutputSizeFinal">500 KB</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.size_change">Size Change</div>
+
+                                <div class="stat-value" id="convSizeReduction">-</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.dimensions">Dimensions</div>
+
+                                <div class="stat-value" id="convFinalDims">1920 × 1080</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label">Format</div>
+
+                                <div class="stat-value" id="convFinalFormat">WebP</div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="metadata-cleaner" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="meta.title">Metadata Cleaner</h1>
+
+                    <p data-i18n="meta.subtitle">Remove EXIF, GPS and hidden data from a photo</p>
+
+                </div>
+
+                <div class="compressor-content">
+
+                    <div class="upload-area" id="metaUploadArea">
+
+                        <input type="file" id="metaFileInput" aria-label="Choose a photo to clean" accept="image/jpeg,image/png,image/webp" hidden>
+
+                        <div class="upload-content">
+
+                            <div class="upload-icon">🧹</div>
+
+                            <div class="upload-text" data-i18n="upload.drag_photo">Drag & drop a photo here</div>
+
+                            <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                            <button class="btn btn-primary" id="metaBrowseBtn" data-i18n="upload.choose_photo">Choose Photo</button>
+
+                            <div class="upload-formats" data-i18n="upload.formats_meta">JPEG, PNG, WebP</div>
+
+                        </div>
+
+                    </div>
+
+                    <div class="image-preview hidden" id="metaImagePreview">
+
+                        <div class="preview-header">
+
+                            <div class="preview-info">
+
+                                <div class="preview-filename" id="metaPreviewFilename">photo.jpg</div>
+
+                                <div class="preview-meta">
+
+                                    <span class="preview-size" id="metaPreviewSize">1.2 MB</span>
+
+                                    <span class="preview-dims" id="metaPreviewDims">1920 × 1080</span>
+
+                                    <span class="preview-format" id="metaPreviewFormat">JPEG</span>
+
+                                </div>
+
+                            </div>
+
+                            <button class="btn btn-primary" id="metaCleanBtn" data-i18n="meta.clean_btn">Clean Metadata</button>
+
+                            <button class="btn btn-secondary" id="metaRemoveBtn" data-i18n="btn.remove">Remove</button>
+
+                        </div>
+
+                        <div class="preview-container">
+
+                            <img class="preview-image" id="metaPreviewImage" alt="Preview">
+
+                        </div>
+
+                    </div>
+
+                    <div class="meta-report hidden" id="metaReport">
+
+                        <div class="meta-report-header">
+
+                            <h3 id="metaReportTitle">Metadata found</h3>
+
+                            <span class="meta-verdict" id="metaVerdict"></span>
+
+                        </div>
+
+                        <ul class="meta-list" id="metaList"></ul>
+
+                        <p class="meta-note" id="metaNote"></p>
+
+                    </div>
+
+                    <div class="result-section hidden" id="metaResultSection">
+
+                        <div class="result-header">
+
+                            <h3 data-i18n="meta.cleaned_photo">Cleaned photo</h3>
+
+                            <button class="btn btn-primary" id="metaDownloadBtn" data-i18n="btn.download">Download</button>
+
+                        </div>
+
+                        <div class="preview-container meta-result-preview">
+
+                            <img class="preview-image" id="metaOutputImage" alt="Cleaned result">
+
+                        </div>
+
+                        <div class="result-stats">
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.original_size">Original size</div>
+
+                                <div class="stat-value" id="metaOriginalSize">-</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.cleaned_size">Cleaned size</div>
+
+                                <div class="stat-value" id="metaOutputSize">-</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.size_change">Size change</div>
+
+                                <div class="stat-value" id="metaSizeChange">-</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.dimensions">Dimensions</div>
+
+                                <div class="stat-value" id="metaDims">-</div>
+
+                            </div>
+
+                            <div class="stat-item">
+
+                                <div class="stat-label" data-i18n="stat.image_data">Image data</div>
+
+                                <div class="stat-value" id="metaQuality">Untouched</div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+            <section id="base64-tool" class="section">
+
+                <div class="header-section">
+
+                    <h1 data-i18n="b64.title">Base64 / Image Converter</h1>
+
+                    <p data-i18n="b64.subtitle">Convert images to Base64 and back again</p>
+
+                </div>
+
+                <div class="compressor-content">
+
+                    <div class="b64-mode-selector" role="tablist" aria-label="Conversion direction">
+
+                        <button class="b64-mode-btn active" id="b64TabToB64" role="tab" aria-selected="true" aria-controls="b64PanelToB64" data-mode="to-b64" data-i18n="b64.tab_to_b64">Image &rarr; Base64</button>
+
+                        <button class="b64-mode-btn" id="b64TabToImage" role="tab" aria-selected="false" aria-controls="b64PanelToImage" data-mode="to-image" data-i18n="b64.tab_to_image">Base64 &rarr; Image</button>
+
+                    </div>
+
+                    <div id="b64PanelToB64" role="tabpanel" aria-labelledby="b64TabToB64">
+
+                        <div class="upload-area" id="b64UploadArea">
+
+                            <input type="file" id="b64FileInput" aria-label="Choose an image to encode as Base64" accept="image/*" hidden>
+
+                            <div class="upload-content">
+
+                                <div class="upload-icon">🔤</div>
+
+                                <div class="upload-text" data-i18n="upload.drag">Drag & drop an image here</div>
+
+                                <div class="upload-subtext" data-i18n="upload.or">or</div>
+
+                                <button class="btn btn-primary" id="b64BrowseBtn" data-i18n="upload.choose_image">Choose Image</button>
+
+                                <div class="upload-formats" data-i18n="upload.formats_any">Any image format</div>
+
+                            </div>
+
+                        </div>
+
+                        <div class="image-preview hidden" id="b64ImagePreview">
+
+                            <div class="preview-header">
+
+                                <div class="preview-info">
+
+                                    <div class="preview-filename" id="b64PreviewFilename">image.png</div>
+
+                                    <div class="preview-meta">
+
+                                        <span class="preview-size" id="b64PreviewSize">-</span>
+
+                                        <span class="preview-dims" id="b64PreviewDims">-</span>
+
+                                        <span class="preview-format" id="b64PreviewFormat">PNG</span>
+
+                                    </div>
+
+                                </div>
+
+                                <button class="btn btn-secondary" id="b64RemoveBtn" data-i18n="btn.remove">Remove</button>
+
+                            </div>
+
+                            <div class="preview-container">
+
+                                <img class="preview-image" id="b64PreviewImage" alt="Preview">
+
+                            </div>
+
+                        </div>
+
+                        <div class="b64-output hidden" id="b64ToB64Result">
+
+                            <div class="b64-output-header">
+
+                                <h3 data-i18n="b64.output">Base64 output</h3>
+
+                                <div class="b64-output-actions">
+
+                                    <button class="btn btn-primary" id="b64CopyBtn" data-i18n="btn.copy">Copy</button>
+
+                                    <button class="btn btn-secondary" id="b64CopyDataUriBtn" data-i18n="b64.copy_data_uri">Copy as data URI</button>
+
+                                    <button class="btn btn-secondary" id="b64DownloadTxtBtn" data-i18n="b64.download_txt">Download .txt</button>
+
+                                </div>
+
+                            </div>
+
+                            <label class="b64-check-row" for="b64WrapToggle">
+
+                                <input type="checkbox" id="b64WrapToggle">
+
+                                <span data-i18n="b64.wrap">Wrap at 76 characters</span>
+
+                            </label>
+
+                            <textarea id="b64OutputText" class="b64-text" readonly spellcheck="false" aria-label="Base64 output"></textarea>
+
+                            <div class="b64-meta-line" id="b64MetaLine"></div>
+
+                            <div class="result-stats">
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="stat.original_size">Original size</div>
+
+                                    <div class="stat-value" id="b64OriginalSize">-</div>
+
+                                </div>
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="b64.base64_length">Base64 length</div>
+
+                                    <div class="stat-value" id="b64EncodedLength">-</div>
+
+                                </div>
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="b64.overhead">Overhead</div>
+
+                                    <div class="stat-value" id="b64Overhead">-</div>
+
+                                </div>
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="b64.data_uri_length">Data URI length</div>
+
+                                    <div class="stat-value" id="b64DataUriLength">-</div>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                    <div id="b64PanelToImage" role="tabpanel" aria-labelledby="b64TabToImage" hidden>
+
+                        <div class="b64-input-group">
+
+                            <label for="b64InputText" data-i18n="b64.input_label">Paste a Base64 string or a data URI</label>
+
+                            <textarea id="b64InputText" class="b64-text b64-text-input" spellcheck="false" data-i18n-attr="placeholder:b64.input_placeholder"
+                                placeholder="data:image/png;base64,iVBORw0KGgo...&#10;&#10;or a raw Base64 payload on its own"></textarea>
+
+                            <div class="b64-hint" id="b64InputHint" data-i18n="b64.input_hint">Whitespace and line breaks are ignored. A data URI prefix is detected and removed automatically.</div>
+
+                            <div class="b64-input-actions">
+
+                                <button class="btn btn-primary" id="b64DecodeBtn" data-i18n="b64.convert_to_image">Convert to Image</button>
+
+                                <button class="btn btn-secondary" id="b64ClearInputBtn" data-i18n="btn.clear">Clear</button>
+
+                            </div>
+
+                            <div class="error-message hidden" id="b64DecodeError"></div>
+
+                        </div>
+
+                        <div class="b64-output hidden" id="b64ToImageResult">
+
+                            <div class="b64-output-header">
+
+                                <h3 data-i18n="b64.decoded_image">Decoded image</h3>
+
+                                <button class="btn btn-primary" id="b64DownloadImgBtn" data-i18n="btn.download">Download</button>
+
+                            </div>
+
+                            <div class="preview-container b64-result-preview">
+
+                                <img class="preview-image" id="b64OutputImage" alt="Decoded result">
+
+                            </div>
+
+                            <div class="result-stats">
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="b64.detected_type">Detected type</div>
+
+                                    <div class="stat-value" id="b64DetectedType">-</div>
+
+                                </div>
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="b64.decoded_size">Decoded size</div>
+
+                                    <div class="stat-value" id="b64DecodedSize">-</div>
+
+                                </div>
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="stat.dimensions">Dimensions</div>
+
+                                    <div class="stat-value" id="b64DecodedDims">-</div>
+
+                                </div>
+
+                                <div class="stat-item">
+
+                                    <div class="stat-label" data-i18n="b64.input_length">Input length</div>
+
+                                    <div class="stat-value" id="b64InputLength">-</div>
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                </div>
+
+            </section>
+
+        </main>
+
+        <footer class="footer">
+
+            <p class="footer-note" data-i18n="footer.licence">Toolz-AZ is free to use. Released under the MIT License.</p>
+
+            <p data-i18n="footer.copyright">&copy; 2026 Toolz-AZ. All rights reserved.</p>
+
+        </footer>
+
+    </div>
+
+    <script src="src/js/i18n.js?v=2026-10-02-5"></script>
+
+    <script src="src/js/app.js?v=2026-10-02-5"></script>
+
+</body>
+
+</html>
+
